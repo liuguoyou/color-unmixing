@@ -5,15 +5,17 @@
 #include <thread>
 #include <QImage>
 #include "nloptutility.h"
+#include "image_processing.h"
 
 using Eigen::Vector3d;
 using Eigen::Vector4d;
 using Eigen::VectorXd;
 using Eigen::Matrix3d;
+using ImageProcessing::Image;
 
 //#define SPARCITY
 #define GRADIENT
-//#define PARALLEL
+#define PARALLEL
 
 namespace
 {
@@ -41,14 +43,6 @@ void perform_in_parallel(Callable function, int width, int height)
 }
 #endif
 
-struct OptimizationParameterSet
-{
-    Vector3d target_color;
-    Vector4d lambda;
-    double   lo;
-    double   sigma;
-};
-
 struct ColorKernel
 {
     ColorKernel(const Vector3d& mu, const Matrix3d& sigma_inv) :
@@ -66,7 +60,14 @@ struct ColorKernel
     }
 };
 
-std::vector<ColorKernel> kernels;
+struct OptimizationParameterSet
+{
+    Vector3d target_color;
+    Vector4d lambda;
+    double   lo;
+    double   sigma;
+    std::vector<ColorKernel> kernels;
+};
 
 Vector3d composite_color(const VectorXd& alphas, const VectorXd& colors)
 {
@@ -145,7 +146,7 @@ Vector4d calculate_equality_constraint_vector(const VectorXd& x, const Vector3d&
     return calculate_equality_constraint_vector(x.segment(0, number_of_layers), x.segment(number_of_layers, number_of_layers * 3), target_color);
 }
 
-VectorXd gradient_of_energy_function(const VectorXd& alphas, const VectorXd& colors, double sigma)
+VectorXd gradient_of_energy_function(const VectorXd& alphas, const VectorXd& colors, const std::vector<ColorKernel>& kernels, double sigma, bool sparcity = true)
 {
     const int number_of_layers = alphas.rows();
 
@@ -161,17 +162,20 @@ VectorXd gradient_of_energy_function(const VectorXd& alphas, const VectorXd& col
     }
 
     // Sparcity term
-    double alpha_sum         = alphas.sum();
-    double alpha_squared_sum = alphas.squaredNorm();
-    for (int index = 0; index < number_of_layers; ++ index)
+    if (sparcity)
     {
-        grad(index) += sigma * (alpha_squared_sum - 2.0 * alphas(index) * alpha_sum) / (alpha_squared_sum * alpha_squared_sum);
+        double alpha_sum         = alphas.sum();
+        double alpha_squared_sum = alphas.squaredNorm();
+        for (int index = 0; index < number_of_layers; ++ index)
+        {
+            grad(index) += sigma * (alpha_squared_sum - 2.0 * alphas(index) * alpha_sum) / (alpha_squared_sum * alpha_squared_sum);
+        }
     }
 
     return grad;
 }
 
-double energy_function(const VectorXd& alphas, const VectorXd& colors, double sigma)
+double energy_function(const VectorXd& alphas, const VectorXd& colors, const std::vector<ColorKernel>& kernels, double sigma, bool sparcity = true)
 {
     const int number_of_layers = alphas.rows();
 
@@ -183,7 +187,7 @@ double energy_function(const VectorXd& alphas, const VectorXd& colors, double si
     }
 
     // Sparcity term
-    energy += sigma * ((alphas.sum() / alphas.squaredNorm()) - 1.0);
+    if (sparcity) energy += sigma * ((alphas.sum() / alphas.squaredNorm()) - 1.0);
 
     return energy;
 }
@@ -201,15 +205,15 @@ double objective_function(const std::vector<double> &x, std::vector<double>& gra
 
     if (!grad.empty())
     {
-        const VectorXd gradient_energy     = gradient_of_energy_function(alphas, colors, set_pointer->sigma);
+        const VectorXd gradient_energy     = gradient_of_energy_function(alphas, colors, set_pointer->kernels, set_pointer->sigma);
         const VectorXd gradient_constraint = gradient_of_equality_constraint_terms(alphas, colors, set_pointer->target_color, constraint_vector, set_pointer->lambda, set_pointer->lo);
         Eigen::Map<VectorXd>(&grad[0], grad.size()) = gradient_energy + gradient_constraint;
     }
 
-    return energy_function(alphas, colors, set_pointer->sigma) + calculate_equality_constraint_terms(constraint_vector, set_pointer->lambda, set_pointer->lo);
+    return energy_function(alphas, colors, set_pointer->kernels, set_pointer->sigma) + calculate_equality_constraint_terms(constraint_vector, set_pointer->lambda, set_pointer->lo);
 }
 
-VectorXd solve_per_pixel_optimization(const Vector3d& target_color)
+VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::vector<ColorKernel>& kernels)
 {
     const int number_of_layers = kernels.size();
 
@@ -221,6 +225,7 @@ VectorXd solve_per_pixel_optimization(const Vector3d& target_color)
     constexpr double beta    = 10.0;
 
     OptimizationParameterSet set;
+    set.kernels      = kernels;
     set.lambda       = Vector4d::Constant(0.1);
     set.lo           = 0.1;
     set.target_color = target_color;
@@ -294,6 +299,27 @@ QColor convert_to_qcolor(const Vector3d& color, double alpha)
     return QColor(color(0) * 255.0, color(1) * 255.0, color(2) * 255.0, alpha * 255.0);
 }
 
+// Alpha channel will be ignored
+Vector3d get_color(const QImage& image, int x, int y)
+{
+    const QColor color = image.pixelColor(x, y);
+    return Vector3d(color.redF(), color.greenF(), color.blueF());
+}
+
+Image convert_to_gray_image(const QImage& image)
+{
+    Image new_image(image.width(), image.height());
+    for (int x = 0; x < image.width(); ++ x)
+    {
+        for (int y = 0; y < image.height(); ++ y)
+        {
+            // Note: "value" is the V element of HSV representation
+            new_image.set_pixel(x, y, image.pixelColor(x, y).valueF());
+        }
+    }
+    return new_image;
+}
+
 }
 
 void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, const std::string &output_directory_path)
@@ -303,12 +329,183 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     const int width  = original_image.width();
     const int height = original_image.height();
 
-    // Hardcode color models
-    kernels.push_back(ColorKernel(Vector3d(1.0, 1.0, 1.0), Matrix3d::Identity()));
-    kernels.push_back(ColorKernel(Vector3d(0.9, 0.8, 0.4), Matrix3d::Identity()));
-    kernels.push_back(ColorKernel(Vector3d(0.5, 0.9, 0.2), Matrix3d::Identity()));
-    kernels.push_back(ColorKernel(Vector3d(0.3, 0.1, 0.0), Matrix3d::Identity()));
-    kernels.push_back(ColorKernel(Vector3d(0.0, 0.0, 0.0), Matrix3d::Identity()));
+    // Calculate gradient images
+    const Image gray_image    = convert_to_gray_image(original_image);
+    const Image sobel_x = ImageProcessing::apply_sobel_filter_x(gray_image);
+    const Image sobel_y = ImageProcessing::apply_sobel_filter_y(gray_image);
+    Image gradient_magnitude = Image(width, height);
+    for (int x = 0; x < width; ++ x)
+    {
+        for (int y = 0; y < height; ++ y)
+        {
+            const Image::Value g_x = sobel_x.get_pixel(x, y);
+            const Image::Value g_y = sobel_y.get_pixel(x, y);
+            const Image::Value value = std::sqrt(g_x * g_x + g_y * g_y);
+            gradient_magnitude.set_pixel(x, y, value);
+        }
+    }
+
+    // TODO: Calculate guided image filter kernels
+
+    // Compute color models
+    std::vector<ColorKernel> kernels;
+    std::vector<std::vector<bool>> well_represented(width, std::vector<bool>(height, false));
+    constexpr double tau = 5.0;
+    while (true)
+    {
+        constexpr int number_of_bins = 10;
+        double bins[number_of_bins][number_of_bins][number_of_bins];
+
+        // Initialize bins
+        for (int r = 0; r < number_of_bins; ++ r)
+        {
+            for (int g = 0; g < number_of_bins; ++ g)
+            {
+                for (int b = 0; b < number_of_bins; ++ b)
+                {
+                    bins[r][g][b] = 0.0;
+                }
+            }
+        }
+
+        // Poll bins
+        auto per_pixel_polling_process = [&](int x, int y)
+        {
+            // Skip if the pixel is already well represented
+            if (well_represented[x][y]) return;
+
+            // Calculate bin
+            const Vector3d pixel_color = get_color(original_image, x, y);
+            const int bin_r = std::min(static_cast<int>(std::floor(pixel_color(0) * number_of_bins)), number_of_bins - 1);
+            const int bin_g = std::min(static_cast<int>(std::floor(pixel_color(1) * number_of_bins)), number_of_bins - 1);
+            const int bin_b = std::min(static_cast<int>(std::floor(pixel_color(2) * number_of_bins)), number_of_bins - 1);
+
+            // Calculate per-pixel representation score
+            double representation_score = DBL_MAX;
+            if (!kernels.empty())
+            {
+                const VectorXd solution = solve_per_pixel_optimization(pixel_color, kernels);
+                const VectorXd alphas = Eigen::Map<const VectorXd>(&solution[0], kernels.size());
+                const VectorXd colors = Eigen::Map<const VectorXd>(&solution[kernels.size()], kernels.size() * 3);
+
+                representation_score = energy_function(alphas, colors, kernels, 0.0, false);
+            }
+
+            // Reject if it is already well represented
+            if (representation_score < tau * tau)
+            {
+                well_represented[x][y] = true;
+                return;
+            }
+
+            // Calculate vote values
+            const double vote_weight = std::exp(- gradient_magnitude.get_pixel(x, y)) * (1.0 - std::exp(- representation_score));
+
+            // Vote to bin
+            bins[bin_r][bin_g][bin_b] += vote_weight;
+        };
+#ifdef PARALLEL
+        perform_in_parallel(per_pixel_polling_process, width, height);
+#else
+        for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y) per_pixel_polling_process(x, y);
+#endif
+
+        // Break the loop if all the pixels are already well represented
+        int count = 0;
+        bool all_pixels_well_represented = true;
+        for (int x = 0; x < width; ++ x)
+        {
+            for (int y = 0; y < height; ++ y)
+            {
+                if (well_represented[x][y]) count ++;
+                all_pixels_well_represented = all_pixels_well_represented && well_represented[x][y];
+            }
+        }
+        std::cout << count << " / " << width * height << std::endl;
+        if (all_pixels_well_represented) break;
+
+        // Select the most popular bin
+        int max_bin_r = - 1;
+        int max_bin_g = - 1;
+        int max_bin_b = - 1;
+        double max_bin_vote = 0.0;
+        for (int r = 0; r < number_of_bins; ++ r)
+        {
+            for (int g = 0; g < number_of_bins; ++ g)
+            {
+                for (int b = 0; b < number_of_bins; ++ b)
+                {
+                    if (max_bin_vote <= bins[r][g][b])
+                    {
+                        max_bin_r = r;
+                        max_bin_g = g;
+                        max_bin_b = b;
+                        max_bin_vote = bins[r][g][b];
+                    }
+                }
+            }
+        }
+
+        // Select seed pixel
+        int selected_x = - 1;
+        int selected_y = - 1;
+        double max_score = 0.0;
+        for (int x = 0; x < width; ++ x)
+        {
+            for (int y = 0; y < height; ++ y)
+            {
+                // Ignore if it is well represented already
+                if (well_represented[x][y]) continue;
+
+                // Calculate bin
+                const Vector3d pixel_color = get_color(original_image, x, y);
+                const int bin_r = std::min(static_cast<int>(std::floor(pixel_color(0) * number_of_bins)), number_of_bins - 1);
+                const int bin_g = std::min(static_cast<int>(std::floor(pixel_color(1) * number_of_bins)), number_of_bins - 1);
+                const int bin_b = std::min(static_cast<int>(std::floor(pixel_color(2) * number_of_bins)), number_of_bins - 1);
+
+                // Ignore if the pixel does not belong to the selected bin
+                if (bin_r != max_bin_r || bin_g != max_bin_g || bin_b != max_bin_b) continue;
+
+                // Calculate score
+                // Note: In the paper, this value is fixed to 20 for any input image. We modified the definition so that it can adapt to input images.
+                const int neighborhood_radius = std::max(std::min(width, height) / 50, 1);
+                int neighborhood_count = 0;
+                for (int offset_x = - neighborhood_radius; offset_x <= neighborhood_radius; ++ offset_x)
+                {
+                    for (int offset_y = - neighborhood_radius; offset_y <= neighborhood_radius; ++ offset_y)
+                    {
+                        if (x + offset_x < 0 || x + offset_x >= width)  continue;
+                        if (y + offset_y < 0 || y + offset_y >= height) continue;
+
+                        const Vector3d pixel_color = get_color(original_image, x + offset_x, y + offset_y);
+                        const int bin_r = std::min(static_cast<int>(std::floor(pixel_color(0) * number_of_bins)), number_of_bins - 1);
+                        const int bin_g = std::min(static_cast<int>(std::floor(pixel_color(1) * number_of_bins)), number_of_bins - 1);
+                        const int bin_b = std::min(static_cast<int>(std::floor(pixel_color(2) * number_of_bins)), number_of_bins - 1);
+
+                        if (bin_r == max_bin_r && bin_g == max_bin_g && bin_b == max_bin_b) ++ neighborhood_count;
+                    }
+                }
+                assert(neighborhood_count > 0);
+                const double score = static_cast<double>(neighborhood_count) * std::exp(- gradient_magnitude.get_pixel(x, y));
+
+                // Update the seed pixel candidate
+                if (max_score < score)
+                {
+                    max_score = score;
+                    selected_x = x;
+                    selected_y = y;
+                }
+            }
+        }
+        assert(selected_x >= 0 && selected_y >= 0);
+
+        // TODO: Compute normal distribution
+        Vector3d mu        = get_color(original_image, selected_x, selected_y);
+        Matrix3d sigma_inv = 300.0 * Matrix3d::Identity();
+
+        // Add a new color model
+        kernels.push_back(ColorKernel(mu, sigma_inv));
+    }
 
     const int number_of_layers = kernels.size();
 
@@ -317,8 +514,8 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
 
     auto per_pixel_process = [&](int x, int y)
     {
-        const QColor pixel_color = original_image.pixelColor(x, y);
-        const VectorXd solution = solve_per_pixel_optimization(Vector3d(pixel_color.redF(), pixel_color.greenF(), pixel_color.blueF()));
+        const Vector3d pixel_color = get_color(original_image, x, y);
+        const VectorXd solution = solve_per_pixel_optimization(pixel_color, kernels);
 
         const VectorXd alphas = Eigen::Map<const VectorXd>(&solution[0], number_of_layers);
         const VectorXd colors = Eigen::Map<const VectorXd>(&solution[number_of_layers], number_of_layers * 3);
@@ -334,10 +531,10 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
             constexpr double epsilon = 1e-16;
             overlay_alphas(index) = (sum_current_alpha < epsilon) ? 0.0 : alphas(index) / sum_current_alpha;
 
-            QColor color = convert_to_qcolor(colors.segment<3>(index * 3), alphas(index));
+            const QColor color = convert_to_qcolor(colors.segment<3>(index * 3), alphas(index));
             layers[index].setPixelColor(x, y, color);
 
-            QColor overlay_color = convert_to_qcolor(colors.segment<3>(index * 3), overlay_alphas(index));
+            const QColor overlay_color = convert_to_qcolor(colors.segment<3>(index * 3), overlay_alphas(index));
             overlay_layers[index].setPixelColor(x, y, overlay_color);
         }
     };
