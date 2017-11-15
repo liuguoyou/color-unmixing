@@ -45,16 +45,20 @@ void perform_in_parallel(Callable function, int width, int height)
 
 struct ColorKernel
 {
-    ColorKernel(const Vector3d& mu, const Matrix3d& sigma_inv) :
+    ColorKernel(const Vector3d& mu, const Matrix3d& sigma_inv, int seed_x = - 1, int seed_y = - 1) :
         mu(mu),
-        sigma_inv(sigma_inv)
+        sigma_inv(sigma_inv),
+        seed_x(seed_x),
+        seed_y(seed_y)
     {
     }
 
     Vector3d mu;
     Matrix3d sigma_inv;
+    int seed_x;
+    int seed_y;
 
-    double calculate_squared_Mahalanobis_distance(const VectorXd& color) const
+    double calculate_squared_Mahalanobis_distance(const Vector3d& color) const
     {
         return (color - mu).transpose() * sigma_inv * (color - mu);
     }
@@ -504,7 +508,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
         Matrix3d sigma_inv = 300.0 * Matrix3d::Identity();
 
         // Add a new color model
-        kernels.push_back(ColorKernel(mu, sigma_inv));
+        kernels.push_back(ColorKernel(mu, sigma_inv, seed_x, seed_y));
     }
 
     const int number_of_layers = kernels.size();
@@ -557,5 +561,17 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     {
         layers[index].save(QString::fromStdString(output_directory_path) + QString("/layer") + QString::number(index) + QString(".png"));
         overlay_layers[index].save(QString::fromStdString(output_directory_path) + QString("/overlay_layer") + QString::number(index) + QString(".png"));
+    }
+
+    // Print kernel info
+    for (const ColorKernel& kernel : kernels)
+    {
+        std::cout << "---------------------" << std::endl;
+        std::cout << "mu: " << std::endl;
+        std::cout << kernel.mu.transpose() << std::endl;
+        std::cout << "sigma: " << std::endl;
+        std::cout << kernel.sigma_inv.inverse() << std::endl;
+        std::cout << "seed: " << std::endl;
+        std::cout << "(" << kernel.seed_x << ", " << kernel.seed_y << ")" << std::endl;
     }
 }
