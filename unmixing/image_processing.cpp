@@ -1,7 +1,21 @@
 #include "image_processing.h"
+#include <numeric>
 
 namespace ImageProcessing
 {
+
+void Image::normalize()
+{
+    const double sum = std::accumulate(pixels.begin(), pixels.end(), 0.0);
+    assert(sum > 1e-16);
+    for (int x = 0; x < width(); ++ x)
+    {
+        for (int y = 0; y < height(); ++ y)
+        {
+            set_pixel(x, y, get_pixel(x, y) / sum);
+        }
+    }
+}
 
 template <typename Scalar>
 Scalar crop(Scalar x, Scalar min_x, Scalar max_x)
@@ -30,8 +44,8 @@ Image apply_convolution(const Image& image, const Eigen::MatrixXd &kernel)
             {
                 for (int kernel_y = 0; kernel_y < kernel_size; ++ kernel_y)
                 {
-                    int original_image_x = crop(x + kernel_x - ((kernel_size - 1) / 2), 0, w - 1);
-                    int original_image_y = crop(y + kernel_y - ((kernel_size - 1) / 2), 0, h - 1);
+                    const int original_image_x = crop(x + kernel_x - ((kernel_size - 1) / 2), 0, w - 1);
+                    const int original_image_y = crop(y + kernel_y - ((kernel_size - 1) / 2), 0, h - 1);
 
                     value += kernel(kernel_x, kernel_y) * image.get_pixel(original_image_x, original_image_y);
                 }
