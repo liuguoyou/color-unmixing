@@ -324,6 +324,26 @@ Image convert_to_gray_image(const QImage& image)
     return new_image;
 }
 
+void print_kernel(const ColorKernel& kernel)
+{
+    std::cout << "mu: " << std::endl;
+    std::cout << kernel.mu.transpose() << std::endl;
+    std::cout << "sigma: " << std::endl;
+    std::cout << kernel.sigma_inv.inverse() << std::endl;
+    std::cout << "seed: " << std::endl;
+    std::cout << "(" << kernel.seed_x << ", " << kernel.seed_y << ")" << std::endl;
+}
+
+void print_kernels(const std::vector<ColorKernel>& kernels)
+{
+    for (const ColorKernel& kernel : kernels)
+    {
+        std::cout << "---------------------" << std::endl;
+        print_kernel(kernel);
+    }
+    std::cout << "---------------------" << std::endl;
+}
+
 }
 
 void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, const std::string &output_directory_path)
@@ -546,14 +566,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
 #ifdef PARALLEL
     perform_in_parallel(per_pixel_process, width, height);
 #else
-    for (int x = 0; x < width; ++ x)
-    {
-        std::cout << x + 1 << " / " << width << std::endl;
-        for (int y = 0; y < height; ++ y)
-        {
-            per_pixel_process(x, y);
-        }
-    }
+    for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y) per_pixel_process(x, y);
 #endif
 
     // Export layers
@@ -564,14 +577,5 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     }
 
     // Print kernel info
-    for (const ColorKernel& kernel : kernels)
-    {
-        std::cout << "---------------------" << std::endl;
-        std::cout << "mu: " << std::endl;
-        std::cout << kernel.mu.transpose() << std::endl;
-        std::cout << "sigma: " << std::endl;
-        std::cout << kernel.sigma_inv.inverse() << std::endl;
-        std::cout << "seed: " << std::endl;
-        std::cout << "(" << kernel.seed_x << ", " << kernel.seed_y << ")" << std::endl;
-    }
+    print_kernels(kernels);
 }
