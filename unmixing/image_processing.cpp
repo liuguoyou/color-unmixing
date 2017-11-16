@@ -21,14 +21,15 @@ void Image::normalize()
 ColorImage::ColorImage(const std::string &file_path)
 {
     QImage q_image(QString::fromStdString(file_path));
-    const int w = q_image.width();
-    const int h = q_image.height();
-    assert(w > 0 && h > 0);
+    width_  = q_image.width();
+    height_ = q_image.height();
 
-    rgba_ = std::vector<Image>(4, Image(w, h));
-    for (int x = 0; x < w; ++ x)
+    assert(width() > 0 && height() > 0);
+
+    rgba_ = std::vector<Image>(4, Image(width(), height()));
+    for (int x = 0; x < width(); ++ x)
     {
-        for (int y = 0; y < h; ++ y)
+        for (int y = 0; y < height(); ++ y)
         {
             const QColor q_color = q_image.pixelColor(x, y);
             rgba_[0].set_pixel(x, y, q_color.redF());
@@ -37,6 +38,26 @@ ColorImage::ColorImage(const std::string &file_path)
             rgba_[3].set_pixel(x, y, q_color.alphaF());
         }
     }
+}
+
+Image ColorImage::get_luminance() const
+{
+    Image new_image(width(), height());
+    for (int x = 0; x < width(); ++ x)
+    {
+        for (int y = 0; y < height(); ++ y)
+        {
+            const double r = rgba_[0].get_pixel(x, y);
+            const double g = rgba_[1].get_pixel(x, y);
+            const double b = rgba_[2].get_pixel(x, y);
+
+            // https://en.wikipedia.org/wiki/Relative_luminance
+            const double luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+            new_image.set_pixel(x, y, luminance);
+        }
+    }
+    return new_image;
 }
 
 template <typename Scalar>

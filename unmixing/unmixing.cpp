@@ -12,6 +12,7 @@ using Eigen::Vector4d;
 using Eigen::VectorXd;
 using Eigen::Matrix3d;
 using ImageProcessing::Image;
+using ImageProcessing::ColorImage;
 
 //#define SPARCITY
 #define GRADIENT
@@ -303,27 +304,6 @@ QColor convert_to_qcolor(const Vector3d& color, double alpha)
     return QColor(color(0) * 255.0, color(1) * 255.0, color(2) * 255.0, alpha * 255.0);
 }
 
-// Alpha channel will be ignored
-Vector3d get_color(const QImage& image, int x, int y)
-{
-    const QColor color = image.pixelColor(x, y);
-    return Vector3d(color.redF(), color.greenF(), color.blueF());
-}
-
-Image convert_to_gray_image(const QImage& image)
-{
-    Image new_image(image.width(), image.height());
-    for (int x = 0; x < image.width(); ++ x)
-    {
-        for (int y = 0; y < image.height(); ++ y)
-        {
-            // Note: "value" is the V element of HSV representation
-            new_image.set_pixel(x, y, image.pixelColor(x, y).valueF());
-        }
-    }
-    return new_image;
-}
-
 void print_kernel(const ColorKernel& kernel)
 {
     std::cout << "mu: " << std::endl;
@@ -349,12 +329,12 @@ void print_kernels(const std::vector<ColorKernel>& kernels)
 void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, const std::string &output_directory_path)
 {
     // Import the target image
-    const QImage original_image(QString::fromStdString(image_file_path));
+    const ColorImage original_image(image_file_path);
     const int width  = original_image.width();
     const int height = original_image.height();
 
     // Calculate gradient images
-    const Image gray_image    = convert_to_gray_image(original_image);
+    const Image gray_image = original_image.get_luminance();
     const Image sobel_x = ImageProcessing::apply_sobel_filter_x(gray_image);
     const Image sobel_y = ImageProcessing::apply_sobel_filter_y(gray_image);
     Image gradient_magnitude = Image(width, height);
@@ -362,14 +342,12 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     {
         for (int y = 0; y < height; ++ y)
         {
-            const Image::Value g_x = sobel_x.get_pixel(x, y);
-            const Image::Value g_y = sobel_y.get_pixel(x, y);
-            const Image::Value value = std::sqrt(g_x * g_x + g_y * g_y);
+            const double g_x = sobel_x.get_pixel(x, y);
+            const double g_y = sobel_y.get_pixel(x, y);
+            const double value = std::sqrt(g_x * g_x + g_y * g_y);
             gradient_magnitude.set_pixel(x, y, value);
         }
     }
-
-    // TODO: Calculate guided image filter kernels
 
     // Compute color models
     std::vector<ColorKernel> kernels;
@@ -399,7 +377,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
             if (well_represented[x][y]) return;
 
             // Calculate bin
-            const Vector3d pixel_color = get_color(original_image, x, y);
+            const Vector3d pixel_color = original_image.get_rgb(x, y);
             const int bin_r = std::min(static_cast<int>(std::floor(pixel_color(0) * number_of_bins)), number_of_bins - 1);
             const int bin_g = std::min(static_cast<int>(std::floor(pixel_color(1) * number_of_bins)), number_of_bins - 1);
             const int bin_b = std::min(static_cast<int>(std::floor(pixel_color(2) * number_of_bins)), number_of_bins - 1);
@@ -441,7 +419,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
         {
             for (int y = 0; y < height; ++ y)
             {
-                if (well_represented[x][y]) count ++;
+                if (well_represented[x][y]) ++ count;
                 all_pixels_well_represented = all_pixels_well_represented && well_represented[x][y];
             }
         }
@@ -471,8 +449,8 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
         }
 
         // Select seed pixel
-        int selected_x = - 1;
-        int selected_y = - 1;
+        int seed_x = - 1;
+        int seed_y = - 1;
         double max_score = 0.0;
         for (int x = 0; x < width; ++ x)
         {
@@ -482,7 +460,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
                 if (well_represented[x][y]) continue;
 
                 // Calculate bin
-                const Vector3d pixel_color = get_color(original_image, x, y);
+                const Vector3d pixel_color = original_image.get_rgb(x, y);
                 const int bin_r = std::min(static_cast<int>(std::floor(pixel_color(0) * number_of_bins)), number_of_bins - 1);
                 const int bin_g = std::min(static_cast<int>(std::floor(pixel_color(1) * number_of_bins)), number_of_bins - 1);
                 const int bin_b = std::min(static_cast<int>(std::floor(pixel_color(2) * number_of_bins)), number_of_bins - 1);
@@ -501,7 +479,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
                         if (x + offset_x < 0 || x + offset_x >= width)  continue;
                         if (y + offset_y < 0 || y + offset_y >= height) continue;
 
-                        const Vector3d pixel_color = get_color(original_image, x + offset_x, y + offset_y);
+                        const Vector3d pixel_color = original_image.get_rgb(x + offset_x, y + offset_y);
                         const int bin_r = std::min(static_cast<int>(std::floor(pixel_color(0) * number_of_bins)), number_of_bins - 1);
                         const int bin_g = std::min(static_cast<int>(std::floor(pixel_color(1) * number_of_bins)), number_of_bins - 1);
                         const int bin_b = std::min(static_cast<int>(std::floor(pixel_color(2) * number_of_bins)), number_of_bins - 1);
@@ -516,19 +494,21 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
                 if (max_score < score)
                 {
                     max_score = score;
-                    selected_x = x;
-                    selected_y = y;
+                    seed_x = x;
+                    seed_y = y;
                 }
             }
         }
-        assert(selected_x >= 0 && selected_y >= 0);
+        assert(seed_x >= 0 && seed_y >= 0);
 
-        // TODO: Compute normal distribution
-        Vector3d mu        = get_color(original_image, selected_x, selected_y);
-        Matrix3d sigma_inv = 300.0 * Matrix3d::Identity();
+        // Compute a new color kernel
+        const Vector3d mu        = original_image.get_rgb(seed_x, seed_y);
+        const Matrix3d sigma_inv = 300.0 * Matrix3d::Identity();
+        const ColorKernel kernel = ColorKernel(mu, sigma_inv, seed_x, seed_y);
+        print_kernel(kernel);
 
-        // Add a new color model
-        kernels.push_back(ColorKernel(mu, sigma_inv, seed_x, seed_y));
+        // Add the new color kernel
+        kernels.push_back(kernel);
     }
 
     const int number_of_layers = kernels.size();
@@ -538,7 +518,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
 
     auto per_pixel_process = [&](int x, int y)
     {
-        const Vector3d pixel_color = get_color(original_image, x, y);
+        const Vector3d pixel_color = original_image.get_rgb(x, y);
         const VectorXd solution = solve_per_pixel_optimization(pixel_color, kernels);
 
         const VectorXd alphas = Eigen::Map<const VectorXd>(&solution[0], number_of_layers);

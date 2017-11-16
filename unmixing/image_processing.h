@@ -42,6 +42,7 @@ private:
 
 class ColorImage
 {
+public:
     ColorImage(int width, int height) :
         width_(width),
         height_(height)
@@ -78,6 +79,8 @@ class ColorImage
         for (int i : { 0, 1, 2, 3 }) rgba(i) = rgba_[i].get_pixel(x, y);
         return rgba;
     }
+
+    Image get_luminance() const;
 
     Image& get_r() { return rgba_[0]; }
     Image& get_g() { return rgba_[1]; }
