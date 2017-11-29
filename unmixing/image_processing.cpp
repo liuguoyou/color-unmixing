@@ -18,6 +18,20 @@ void Image::normalize()
     }
 }
 
+void Image::save(const std::string &file_path) const
+{
+    QImage q_image(width(), height(), QImage::Format_ARGB32);
+    for (int x = 0; x < width(); ++ x)
+    {
+        for (int y = 0; y < height(); ++ y)
+        {
+            const double value = get_pixel(x, y);
+            q_image.setPixelColor(x, y, QColor(value * 255, value * 255, value * 255, 255));
+        }
+    }
+    q_image.save(QString::fromStdString(file_path));
+}
+
 ColorImage::ColorImage(const std::string &file_path)
 {
     QImage q_image(QString::fromStdString(file_path));

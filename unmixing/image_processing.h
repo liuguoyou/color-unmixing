@@ -33,6 +33,8 @@ public:
     int width()  const { return width_; }
     int height() const { return height_; }
 
+    void save(const std::string& file_path) const;
+
 private:
     int width_;
     int height_;
