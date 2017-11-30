@@ -129,12 +129,45 @@ Image apply_convolution(const Image& image, const Eigen::MatrixXd &kernel)
     }
     return new_image;
 }
-                {
 
+Image calculate_guided_filter_kernel(const Image& image, int center_x, int center_y, int radius, double epsilon, bool force_positive)
+{
+    const int width  = image.width();
+    const int height = image.height();
+
+    const Image mean_I = ImageProcessing::apply_box_filter(image, radius);
+    const Image corr_I = ImageProcessing::apply_box_filter(ImageProcessing::square(image), radius);
+    const Image var_I  = ImageProcessing::substitute(corr_I, ImageProcessing::square(mean_I));
+    const double I_seed = image.get_pixel(center_x, center_y);
+
+    Image weight_map(width, height, 0.0);
+    for (int x = center_x - radius; x <= center_x + radius; ++ x)
+    {
+        for (int y = center_y - radius; y <= center_y + radius; ++ y)
+        {
+            if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+            const double I_j = image.get_pixel(x, y);
+            double weight = 0.0;
+            for (int k_x = 0; k_x < width; ++ k_x)
+            {
+                for (int k_y = 0; k_y < height; ++ k_y)
+                {
+                    bool range_j    = (k_x >= x - radius && k_x <= x + radius) && (k_y >= y - radius && k_y <= y + radius);
+                    bool range_seed = (k_x >= center_x - radius && k_x <= center_x + radius) && (k_y >= center_y - radius && k_y <= center_y + radius);
+                    if (!range_j || !range_seed) continue;
+
+                    const double mu_k  = mean_I.get_pixel(k_x, k_y);
+                    const double var_k = var_I.get_pixel(k_x, k_y);
+                    weight += 1.0 + ((I_seed - mu_k) * (I_j - mu_k)) / (epsilon + var_k);
                 }
             }
+            if (force_positive) weight = std::max(0.0, weight);
+            weight_map.set_pixel(x, y, weight);
         }
     }
+    weight_map.force_unity();
+    return weight_map;
 }
 
 }

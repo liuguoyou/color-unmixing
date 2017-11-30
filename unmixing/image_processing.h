@@ -120,6 +120,7 @@ private:
 };
 
 Image apply_convolution(const Image& image, const Eigen::MatrixXd& kernel);
+Image calculate_guided_filter_kernel(const Image& image, int center_x, int center_y, int radius, double epsilon = 0.01, bool force_positive = true);
 
 ///////////////////////////////////////////////////////////////////////////////////
 // Wrapper functions
