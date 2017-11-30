@@ -335,27 +335,6 @@ void compute_normal_distribution(const ColorImage& original_image, const Image& 
     sigma += 1e-3 * Matrix3d::Identity(); // For avoiding singularity
 }
 
-Image calculate_gradient_magnitude(const Image& image)
-{
-    const int width  = image.width();
-    const int height = image.height();
-    const Image sobel_x = ImageProcessing::apply_sobel_filter_x(image);
-    const Image sobel_y = ImageProcessing::apply_sobel_filter_y(image);
-
-    Image gradient_magnitude = Image(width, height);
-    for (int x = 0; x < width; ++ x)
-    {
-        for (int y = 0; y < height; ++ y)
-        {
-            const double g_x = sobel_x.get_pixel(x, y);
-            const double g_y = sobel_y.get_pixel(x, y);
-            const double value = std::sqrt(g_x * g_x + g_y * g_y);
-            gradient_magnitude.set_pixel(x, y, value);
-        }
-    }
-    return gradient_magnitude;
-}
-
 }
 
 void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, const std::string &output_directory_path)
@@ -373,8 +352,8 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     std::vector<ColorKernel> kernels;
     std::vector<std::vector<bool>> well_represented(width, std::vector<bool>(height, false));
 
-    constexpr double tau = 5.0;                // The value used in the original paper is 5.
-    constexpr int    neighborhood_radius = 10; // In the paper, this value is fixed to 10 (i.e., 20 x 20 neighborhood) for any input image. This may need to be modified so that it adapts to the image size.
+    constexpr double tau                 = 5.0; // The value used in the original paper is 5.
+    constexpr int    neighborhood_radius = 10;  // In the paper, this value is fixed to 10 (i.e., 20 x 20 neighborhood) for any input image. This may need to be modified so that it adapts to the image size.
     constexpr int    number_of_bins      = 10;
 
     while (true)
@@ -572,6 +551,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     for (int index = 0; index < number_of_layers; ++ index)
     {
         layers[index].save(output_directory_path + "/layer" + std::to_string(index) + ".png");
+        layers[index].get_a().save(output_directory_path + "/layer_alpha" + std::to_string(index) + ".png");
         overlay_layers[index].save(output_directory_path + "/overlay_layer" + std::to_string(index) + ".png");
     }
 

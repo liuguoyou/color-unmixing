@@ -121,6 +121,7 @@ private:
 
 Image apply_convolution(const Image& image, const Eigen::MatrixXd& kernel);
 Image calculate_guided_filter_kernel(const Image& image, int center_x, int center_y, int radius, double epsilon = 0.01, bool force_positive = true);
+Image calculate_gradient_magnitude(const Image& image);
 
 ///////////////////////////////////////////////////////////////////////////////////
 // Wrapper functions
@@ -153,6 +154,16 @@ inline Image apply_box_filter(const Image& image, int radius)
     return apply_convolution(image, kernel);
 }
 
+inline Image multiply(const Image& left_image, const Image& right_image)
+{
+    Image new_image(left_image.width(), left_image.height());
+    for (int x = 0; x < left_image.width(); ++ x) for (int y = 0; y < left_image.height(); ++ y)
+    {
+        new_image.set_pixel(x, y, left_image.get_pixel(x, y) * right_image.get_pixel(x, y));
+    }
+    return new_image;
+}
+
 inline Image square(const Image& image)
 {
     Image new_image(image.width(), image.height());
@@ -163,7 +174,7 @@ inline Image square(const Image& image)
     return new_image;
 }
 
-inline Image substitute(const Image& left_image, const Image& right_image)
+inline Image subtract(const Image& left_image, const Image& right_image)
 {
     assert(left_image.width() == right_image.width());
     assert(left_image.height() == right_image.height());
@@ -171,6 +182,18 @@ inline Image substitute(const Image& left_image, const Image& right_image)
     for (int x = 0; x < left_image.width(); ++ x) for (int y = 0; y < left_image.height(); ++ y)
     {
         new_image.set_pixel(x, y, left_image.get_pixel(x, y) - right_image.get_pixel(x, y));
+    }
+    return new_image;
+}
+
+inline Image add(const Image& left_image, const Image& right_image)
+{
+    assert(left_image.width() == right_image.width());
+    assert(left_image.height() == right_image.height());
+    Image new_image(left_image.width(), left_image.height());
+    for (int x = 0; x < left_image.width(); ++ x) for (int y = 0; y < left_image.height(); ++ y)
+    {
+        new_image.set_pixel(x, y, left_image.get_pixel(x, y) + right_image.get_pixel(x, y));
     }
     return new_image;
 }

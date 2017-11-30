@@ -100,6 +100,8 @@ Image ColorImage::get_luminance() const
     return new_image;
 }
 
+///////////////////////////////////////////////////////////////////////////////////////
+
 Image apply_convolution(const Image& image, const Eigen::MatrixXd &kernel)
 {
     const int w = image.width();
@@ -137,7 +139,7 @@ Image calculate_guided_filter_kernel(const Image& image, int center_x, int cente
 
     const Image mean_I = ImageProcessing::apply_box_filter(image, radius);
     const Image corr_I = ImageProcessing::apply_box_filter(ImageProcessing::square(image), radius);
-    const Image var_I  = ImageProcessing::substitute(corr_I, ImageProcessing::square(mean_I));
+    const Image var_I  = ImageProcessing::subtract(corr_I, ImageProcessing::square(mean_I));
     const double I_seed = image.get_pixel(center_x, center_y);
 
     Image weight_map(width, height, 0.0);
@@ -168,6 +170,27 @@ Image calculate_guided_filter_kernel(const Image& image, int center_x, int cente
     }
     weight_map.force_unity();
     return weight_map;
+}
+
+Image calculate_gradient_magnitude(const Image& image)
+{
+    const int width  = image.width();
+    const int height = image.height();
+    const Image sobel_x = ImageProcessing::apply_sobel_filter_x(image);
+    const Image sobel_y = ImageProcessing::apply_sobel_filter_y(image);
+
+    Image gradient_magnitude = Image(width, height);
+    for (int x = 0; x < width; ++ x)
+    {
+        for (int y = 0; y < height; ++ y)
+        {
+            const double g_x = sobel_x.get_pixel(x, y);
+            const double g_y = sobel_y.get_pixel(x, y);
+            const double value = std::sqrt(g_x * g_x + g_y * g_y);
+            gradient_magnitude.set_pixel(x, y, value);
+        }
+    }
+    return gradient_magnitude;
 }
 
 }
