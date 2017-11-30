@@ -1,6 +1,7 @@
 #include "image_processing.h"
 #include <numeric>
 #include <cfloat>
+#include <Eigen/LU>
 #include <QImage>
 
 namespace ImageProcessing
@@ -192,5 +193,67 @@ Image calculate_gradient_magnitude(const Image& image)
     }
     return gradient_magnitude;
 }
+
+Image apply_guided_filter(const Image& input_image, const ColorImage& guidance_image, int radius, double epsilon)
+{
+    const int width  = input_image.width();
+    const int height = input_image.height();
+
+    assert(width == guidance_image.width());
+    assert(height == guidance_image.height());
+
+    const Image I_r = guidance_image.get_r();
+    const Image I_g = guidance_image.get_g();
+    const Image I_b = guidance_image.get_b();
+
+    const Image mean_I_r = apply_box_filter(I_r, radius);
+    const Image mean_I_g = apply_box_filter(I_g, radius);
+    const Image mean_I_b = apply_box_filter(I_b, radius);
+
+    const Image mean_p = apply_box_filter(input_image, radius);
+
+    const Image mean_Ip_r = apply_box_filter(multiply(I_r, input_image), radius);
+    const Image mean_Ip_g = apply_box_filter(multiply(I_g, input_image), radius);
+    const Image mean_Ip_b = apply_box_filter(multiply(I_b, input_image), radius);
+
+    const Image cov_Ip_r = subtract(mean_Ip_r, multiply(mean_I_r, mean_p));
+    const Image cov_Ip_g = subtract(mean_Ip_g, multiply(mean_I_g, mean_p));
+    const Image cov_Ip_b = subtract(mean_Ip_b, multiply(mean_I_b, mean_p));
+
+    const Image var_I_rr = subtract(apply_box_filter(multiply(I_r, I_r), radius), multiply(mean_I_r, mean_I_r));
+    const Image var_I_rg = subtract(apply_box_filter(multiply(I_r, I_g), radius), multiply(mean_I_r, mean_I_g));
+    const Image var_I_rb = subtract(apply_box_filter(multiply(I_r, I_b), radius), multiply(mean_I_r, mean_I_b));
+    const Image var_I_gg = subtract(apply_box_filter(multiply(I_g, I_g), radius), multiply(mean_I_g, mean_I_g));
+    const Image var_I_gb = subtract(apply_box_filter(multiply(I_g, I_b), radius), multiply(mean_I_g, mean_I_b));
+    const Image var_I_bb = subtract(apply_box_filter(multiply(I_b, I_b), radius), multiply(mean_I_b, mean_I_b));
+
+    Image a_r(width, height);
+    Image a_g(width, height);
+    Image a_b(width, height);
+    for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y)
+    {
+        Eigen::Matrix3d sigma;
+        sigma << var_I_rr.get_pixel(x, y), var_I_rg.get_pixel(x, y), var_I_rb.get_pixel(x, y),
+                 var_I_rg.get_pixel(x, y), var_I_gg.get_pixel(x, y), var_I_gb.get_pixel(x, y),
+                 var_I_rb.get_pixel(x, y), var_I_gb.get_pixel(x, y), var_I_bb.get_pixel(x, y);
+
+        const Eigen::Vector3d cov_Ip = { cov_Ip_r.get_pixel(x, y), cov_Ip_g.get_pixel(x, y), cov_Ip_b.get_pixel(x, y) };
+        const Eigen::Vector3d a_xy = (sigma + epsilon * Eigen::Matrix3d::Identity()).inverse() * cov_Ip;
+
+        a_r.set_pixel(x, y, a_xy(0));
+        a_g.set_pixel(x, y, a_xy(1));
+        a_b.set_pixel(x, y, a_xy(2));
+    }
+
+    const Image b = subtract(subtract(subtract(mean_p, multiply(a_r, mean_I_r)), multiply(a_g, mean_I_g)), multiply(a_b, mean_I_g));
+
+    Image q = apply_box_filter(b, radius);
+    q = add(q, multiply(apply_box_filter(a_r, radius), I_r));
+    q = add(q, multiply(apply_box_filter(a_g, radius), I_g));
+    q = add(q, multiply(apply_box_filter(a_b, radius), I_b));
+
+    return q;
+}
+
 
 }
