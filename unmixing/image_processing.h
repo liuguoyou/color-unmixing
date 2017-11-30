@@ -8,10 +8,30 @@
 namespace ImageProcessing
 {
 
-class Image
+class AbstractImage
 {
 public:
-    Image(int width, int height, double value = 0.0) : width_(width), height_(height)
+    AbstractImage(int width, int height) : width_(width), height_(height) {}
+    AbstractImage() {}
+
+    using IntColor = Eigen::Vector4i;
+
+    void save(const std::string& file_path) const;
+
+    int width()  const { return width_;  }
+    int height() const { return height_; }
+
+protected:
+    int width_;
+    int height_;
+
+    virtual IntColor get_color(int x, int y) const = 0;
+};
+
+class Image : public AbstractImage
+{
+public:
+    Image(int width, int height, double value = 0.0) : AbstractImage(width, height)
     {
         pixels = std::vector<double>(width_ * height_, value);
     }
@@ -28,26 +48,19 @@ public:
         return pixels[y * width() + x];
     }
 
-    void normalize();
-
-    int width()  const { return width_; }
-    int height() const { return height_; }
-
-    void save(const std::string& file_path) const;
+    void force_unity();
+    void scale_to_unit();
 
 private:
-    int width_;
-    int height_;
+    IntColor get_color(int x, int y) const;
 
     std::vector<double> pixels;
 };
 
-class ColorImage
+class ColorImage : public AbstractImage
 {
 public:
-    ColorImage(int width, int height) :
-        width_(width),
-        height_(height)
+    ColorImage(int width, int height) : AbstractImage(width, height)
     {
         rgba_ = std::vector<Image>(4, Image(width, height));
     }
@@ -64,6 +77,13 @@ public:
     {
         assert(x < width() && y < height());
         for (int i : { 0, 1, 2, 3 }) rgba_[i].set_pixel(x, y, rgba(i));
+    }
+
+    void set_rgba(int x, int y, const Eigen::Vector3d& rgb, double a)
+    {
+        assert(x < width() && y < height());
+        for (int i : { 0, 1, 2 }) rgba_[i].set_pixel(x, y, rgb(i));
+        rgba_[3].set_pixel(x, y, a);
     }
 
     Eigen::Vector3d get_rgb(int x, int y) const
@@ -93,12 +113,8 @@ public:
     const Image& get_b() const { return rgba_[2]; }
     const Image& get_a() const { return rgba_[3]; }
 
-    int width()  const { return width_; }
-    int height() const { return height_; }
-
-private:
-    int width_;
-    int height_;
+private: 
+    IntColor get_color(int x, int y) const;
 
     std::vector<Image> rgba_;
 };
@@ -139,12 +155,9 @@ inline Image apply_box_filter(const Image& image, int radius)
 inline Image square(const Image& image)
 {
     Image new_image(image.width(), image.height());
-    for (int x = 0; x < image.width(); ++ x)
+    for (int x = 0; x < image.width(); ++ x) for (int y = 0; y < image.height(); ++ y)
     {
-        for (int y = 0; y < image.height(); ++ y)
-        {
-            new_image.set_pixel(x, y, image.get_pixel(x, y) * image.get_pixel(x, y));
-        }
+        new_image.set_pixel(x, y, image.get_pixel(x, y) * image.get_pixel(x, y));
     }
     return new_image;
 }
@@ -154,12 +167,9 @@ inline Image substitute(const Image& left_image, const Image& right_image)
     assert(left_image.width() == right_image.width());
     assert(left_image.height() == right_image.height());
     Image new_image(left_image.width(), left_image.height());
-    for (int x = 0; x < left_image.width(); ++ x)
+    for (int x = 0; x < left_image.width(); ++ x) for (int y = 0; y < left_image.height(); ++ y)
     {
-        for (int y = 0; y < left_image.height(); ++ y)
-        {
-            new_image.set_pixel(x, y, left_image.get_pixel(x, y) - right_image.get_pixel(x, y));
-        }
+        new_image.set_pixel(x, y, left_image.get_pixel(x, y) - right_image.get_pixel(x, y));
     }
     return new_image;
 }
