@@ -3,13 +3,14 @@
 #include <cfloat>
 #include <iostream>
 #include <thread>
-#include <QImage>
+#include <Eigen/LU>
 #include "nloptutility.h"
 #include "image_processing.h"
 
 using Eigen::Vector3d;
 using Eigen::Vector4d;
 using Eigen::VectorXd;
+using Eigen::Vector3i;
 using Eigen::Matrix3d;
 using ImageProcessing::Image;
 using ImageProcessing::ColorImage;
@@ -240,7 +241,6 @@ VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::v
     set.sigma        = 0.0;
 #endif
 
-#if 1
     VectorXd x_initial = VectorXd::Zero(number_of_layers * 4);
 
     double min_distance  = DBL_MAX;
@@ -258,14 +258,8 @@ VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::v
     for (int index = 0; index < number_of_layers; ++ index)
     {
         x_initial.segment<3>(number_of_layers + index * 3) = (index == closest_index) ? set.target_color : kernels[index].mu;
+        for (int i : { 0, 1, 2}) x_initial(number_of_layers + index * 3 + i) = std::max(std::min(x_initial(number_of_layers + index * 3 + i), 1.0), 0.0);
     }
-#else
-    VectorXd x_initial = VectorXd::Constant(number_of_layers * 4, 1.0 / static_cast<double>(number_of_layers));
-    for (int index = 0; index < number_of_layers; ++ index)
-    {
-        x_initial.segment<3>(number_of_layers + index * 3) = target_color; // kernels[index].mu;
-    }
-#endif
 
     VectorXd x = x_initial;
 
@@ -290,18 +284,15 @@ VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::v
         if (!is_changed && g.norm() < epsilon) break;
         if (count > max_count)
         {
+#if 0
             std::cerr << "Error: g = [ " << g.transpose() << " ]" << std::endl;
+#endif
             break;
         }
 
         ++ count;
     }
     return x;
-}
-
-QColor convert_to_qcolor(const Vector3d& color, double alpha)
-{
-    return QColor(color(0) * 255.0, color(1) * 255.0, color(2) * 255.0, alpha * 255.0);
 }
 
 void print_kernel(const ColorKernel& kernel)
@@ -324,19 +315,33 @@ void print_kernels(const std::vector<ColorKernel>& kernels)
     std::cout << "---------------------" << std::endl;
 }
 
-}
-
-void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, const std::string &output_directory_path)
+void compute_normal_distribution(const ColorImage& original_image, const Image& weight_map, Vector3d& mu, Matrix3d& sigma)
 {
-    // Import the target image
-    const ColorImage original_image(image_file_path);
     const int width  = original_image.width();
     const int height = original_image.height();
 
-    // Calculate gradient images
-    const Image gray_image = original_image.get_luminance();
-    const Image sobel_x = ImageProcessing::apply_sobel_filter_x(gray_image);
-    const Image sobel_y = ImageProcessing::apply_sobel_filter_y(gray_image);
+    mu = Vector3d::Zero();
+    for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y)
+    {
+        const Vector3d I = original_image.get_rgb(x, y);
+        mu += weight_map.get_pixel(x, y) * I;
+    }
+    sigma = Matrix3d::Zero();
+    for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y)
+    {
+        const Vector3d I = original_image.get_rgb(x, y);
+        sigma += weight_map.get_pixel(x, y) * (I - mu) * (I - mu).transpose();
+    }
+    sigma += 1e-3 * Matrix3d::Identity(); // For avoiding singularity
+}
+
+Image calculate_gradient_magnitude(const Image& image)
+{
+    const int width  = image.width();
+    const int height = image.height();
+    const Image sobel_x = ImageProcessing::apply_sobel_filter_x(image);
+    const Image sobel_y = ImageProcessing::apply_sobel_filter_y(image);
+
     Image gradient_magnitude = Image(width, height);
     for (int x = 0; x < width; ++ x)
     {
@@ -348,6 +353,21 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
             gradient_magnitude.set_pixel(x, y, value);
         }
     }
+    return gradient_magnitude;
+}
+
+}
+
+void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, const std::string &output_directory_path)
+{
+    // Import the target image
+    const ColorImage original_image(image_file_path);
+    const int width  = original_image.width();
+    const int height = original_image.height();
+
+    // Calculate intermediate images
+    const Image gray_image         = original_image.get_luminance();
+    const Image gradient_magnitude = calculate_gradient_magnitude(gray_image);
 
     // Compute color models
     std::vector<ColorKernel> kernels;
@@ -356,19 +376,18 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     while (true)
     {
         constexpr int number_of_bins = 10;
-        double bins[number_of_bins][number_of_bins][number_of_bins];
-
         // Initialize bins
-        for (int r = 0; r < number_of_bins; ++ r)
+        double bins[number_of_bins][number_of_bins][number_of_bins];
+        std::fill(bins[0][0], bins[number_of_bins][0], 0.0);
+
+        auto get_bin = [number_of_bins, &original_image](int x, int y)
         {
-            for (int g = 0; g < number_of_bins; ++ g)
-            {
-                for (int b = 0; b < number_of_bins; ++ b)
-                {
-                    bins[r][g][b] = 0.0;
-                }
-            }
-        }
+            const Vector3d pixel_color = original_image.get_rgb(x, y);
+            const int bin_r = std::min(static_cast<int>(std::floor(pixel_color(0) * number_of_bins)), number_of_bins - 1);
+            const int bin_g = std::min(static_cast<int>(std::floor(pixel_color(1) * number_of_bins)), number_of_bins - 1);
+            const int bin_b = std::min(static_cast<int>(std::floor(pixel_color(2) * number_of_bins)), number_of_bins - 1);
+            return Vector3i(bin_r, bin_g, bin_b);
+        };
 
         // Poll bins
         auto per_pixel_polling_process = [&](int x, int y)
@@ -377,15 +396,13 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
             if (well_represented[x][y]) return;
 
             // Calculate bin
-            const Vector3d pixel_color = original_image.get_rgb(x, y);
-            const int bin_r = std::min(static_cast<int>(std::floor(pixel_color(0) * number_of_bins)), number_of_bins - 1);
-            const int bin_g = std::min(static_cast<int>(std::floor(pixel_color(1) * number_of_bins)), number_of_bins - 1);
-            const int bin_b = std::min(static_cast<int>(std::floor(pixel_color(2) * number_of_bins)), number_of_bins - 1);
+            const Vector3i bin = get_bin(x, y);
 
             // Calculate per-pixel representation score
             double representation_score = DBL_MAX;
             if (!kernels.empty())
             {
+                const Vector3d pixel_color = original_image.get_rgb(x, y);
                 const VectorXd solution = solve_per_pixel_optimization(pixel_color, kernels);
                 const VectorXd alphas = Eigen::Map<const VectorXd>(&solution[0], kernels.size());
                 const VectorXd colors = Eigen::Map<const VectorXd>(&solution[kernels.size()], kernels.size() * 3);
@@ -404,7 +421,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
             const double vote_weight = std::exp(- gradient_magnitude.get_pixel(x, y)) * (1.0 - std::exp(- representation_score));
 
             // Vote to bin
-            bins[bin_r][bin_g][bin_b] += vote_weight;
+            bins[bin(0)][bin(1)][bin(2)] += vote_weight;
         };
 #ifdef PARALLEL
         perform_in_parallel(per_pixel_polling_process, width, height);
@@ -412,24 +429,27 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
         for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y) per_pixel_polling_process(x, y);
 #endif
 
-        // Break the loop if all the pixels are already well represented
-        int count = 0;
-        bool all_pixels_well_represented = true;
-        for (int x = 0; x < width; ++ x)
+        // Export the current mask
+        Image well_represented_map(width, height, 0.0);
+        for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y)
         {
-            for (int y = 0; y < height; ++ y)
-            {
-                if (well_represented[x][y]) ++ count;
-                all_pixels_well_represented = all_pixels_well_represented && well_represented[x][y];
-            }
+            well_represented_map.set_pixel(x, y, (well_represented[x][y] ? 1.0 : 0.0));
+        }
+        well_represented_map.save(output_directory_path + "/rep" + std::to_string(kernels.size()) + ".png");
+
+        // Break the loop if *almost* all the pixels are already well represented
+        int count = 0;
+        for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y)
+        {
+            if (well_represented[x][y]) ++ count;
         }
         std::cout << count << " / " << width * height << std::endl;
-        if (all_pixels_well_represented) break;
+        constexpr double almost_threshold = 0.995;
+        const bool done = (almost_threshold < static_cast<double>(count) / static_cast<double>(width * height));
+        if (done) break;
 
         // Select the most popular bin
-        int max_bin_r = - 1;
-        int max_bin_g = - 1;
-        int max_bin_b = - 1;
+        Vector3i max_bin = Vector3i::Constant(- 1);
         double max_bin_vote = 0.0;
         for (int r = 0; r < number_of_bins; ++ r)
         {
@@ -439,9 +459,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
                 {
                     if (max_bin_vote <= bins[r][g][b])
                     {
-                        max_bin_r = r;
-                        max_bin_g = g;
-                        max_bin_b = b;
+                        max_bin = Vector3i(r, g, b);
                         max_bin_vote = bins[r][g][b];
                     }
                 }
@@ -452,51 +470,41 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
         int seed_x = - 1;
         int seed_y = - 1;
         double max_score = 0.0;
-        for (int x = 0; x < width; ++ x)
+        for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y)
         {
-            for (int y = 0; y < height; ++ y)
+            // Ignore if it is well represented already
+            if (well_represented[x][y]) continue;
+
+            // Calculate bin
+            const Vector3i bin = get_bin(x, y);
+
+            // Ignore if the pixel does not belong to the selected bin
+            if (bin != max_bin) continue;
+
+            // Calculate score
+            int neighborhood_count = 0;
+            for (int offset_x = - neighborhood_radius; offset_x <= neighborhood_radius; ++ offset_x)
             {
-                // Ignore if it is well represented already
-                if (well_represented[x][y]) continue;
-
-                // Calculate bin
-                const Vector3d pixel_color = original_image.get_rgb(x, y);
-                const int bin_r = std::min(static_cast<int>(std::floor(pixel_color(0) * number_of_bins)), number_of_bins - 1);
-                const int bin_g = std::min(static_cast<int>(std::floor(pixel_color(1) * number_of_bins)), number_of_bins - 1);
-                const int bin_b = std::min(static_cast<int>(std::floor(pixel_color(2) * number_of_bins)), number_of_bins - 1);
-
-                // Ignore if the pixel does not belong to the selected bin
-                if (bin_r != max_bin_r || bin_g != max_bin_g || bin_b != max_bin_b) continue;
-
-                // Calculate score
-                // Note: In the paper, this value is fixed to 20 for any input image. We modified the definition so that it can adapt to input images.
-                const int neighborhood_radius = std::max(std::min(width, height) / 50, 1);
-                int neighborhood_count = 0;
-                for (int offset_x = - neighborhood_radius; offset_x <= neighborhood_radius; ++ offset_x)
+                for (int offset_y = - neighborhood_radius; offset_y <= neighborhood_radius; ++ offset_y)
                 {
-                    for (int offset_y = - neighborhood_radius; offset_y <= neighborhood_radius; ++ offset_y)
-                    {
-                        if (x + offset_x < 0 || x + offset_x >= width)  continue;
-                        if (y + offset_y < 0 || y + offset_y >= height) continue;
+                    if (x + offset_x < 0 || x + offset_x >= width)  continue;
+                    if (y + offset_y < 0 || y + offset_y >= height) continue;
+                    if (well_represented[x + offset_x][y + offset_y]) continue;
 
-                        const Vector3d pixel_color = original_image.get_rgb(x + offset_x, y + offset_y);
-                        const int bin_r = std::min(static_cast<int>(std::floor(pixel_color(0) * number_of_bins)), number_of_bins - 1);
-                        const int bin_g = std::min(static_cast<int>(std::floor(pixel_color(1) * number_of_bins)), number_of_bins - 1);
-                        const int bin_b = std::min(static_cast<int>(std::floor(pixel_color(2) * number_of_bins)), number_of_bins - 1);
+                    const Vector3i neighbor_bin = get_bin(x + offset_x, y + offset_y);
 
-                        if (bin_r == max_bin_r && bin_g == max_bin_g && bin_b == max_bin_b) ++ neighborhood_count;
-                    }
+                    if (neighbor_bin == max_bin) ++ neighborhood_count;
                 }
-                assert(neighborhood_count > 0);
-                const double score = static_cast<double>(neighborhood_count) * std::exp(- gradient_magnitude.get_pixel(x, y));
+            }
+            assert(neighborhood_count > 0);
+            const double score = static_cast<double>(neighborhood_count) * std::exp(- gradient_magnitude.get_pixel(x, y));
 
-                // Update the seed pixel candidate
-                if (max_score < score)
-                {
-                    max_score = score;
-                    seed_x = x;
-                    seed_y = y;
-                }
+            // Update the seed pixel candidate
+            if (max_score < score)
+            {
+                max_score = score;
+                seed_x = x;
+                seed_y = y;
             }
         }
         assert(seed_x >= 0 && seed_y >= 0);
@@ -513,8 +521,8 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
 
     const int number_of_layers = kernels.size();
 
-    std::vector<QImage> layers(number_of_layers, QImage(QSize(width, height), QImage::Format_ARGB32));
-    std::vector<QImage> overlay_layers(number_of_layers, QImage(QSize(width, height), QImage::Format_ARGB32));
+    std::vector<ColorImage> layers(number_of_layers, ColorImage(width, height));
+    std::vector<ColorImage> overlay_layers(number_of_layers, ColorImage(width, height));
 
     auto per_pixel_process = [&](int x, int y)
     {
@@ -535,11 +543,9 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
             constexpr double epsilon = 1e-16;
             overlay_alphas(index) = (sum_current_alpha < epsilon) ? 0.0 : alphas(index) / sum_current_alpha;
 
-            const QColor color = convert_to_qcolor(colors.segment<3>(index * 3), alphas(index));
-            layers[index].setPixelColor(x, y, color);
+            layers[index].set_rgba(x, y, colors.segment<3>(index * 3), alphas(index));
 
-            const QColor overlay_color = convert_to_qcolor(colors.segment<3>(index * 3), overlay_alphas(index));
-            overlay_layers[index].setPixelColor(x, y, overlay_color);
+            overlay_layers[index].set_rgba(x, y, colors.segment<3>(index * 3), overlay_alphas(index));
         }
     };
 
@@ -552,9 +558,12 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     // Export layers
     for (int index = 0; index < number_of_layers; ++ index)
     {
-        layers[index].save(QString::fromStdString(output_directory_path) + QString("/layer") + QString::number(index) + QString(".png"));
-        overlay_layers[index].save(QString::fromStdString(output_directory_path) + QString("/overlay_layer") + QString::number(index) + QString(".png"));
+        layers[index].save(output_directory_path + "/layer" + std::to_string(index) + ".png");
+        overlay_layers[index].save(output_directory_path + "/overlay_layer" + std::to_string(index) + ".png");
     }
+
+    // Export the original image
+    original_image.save(output_directory_path + "/original.png");
 
     // Print kernel info
     print_kernels(kernels);
