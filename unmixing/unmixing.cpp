@@ -372,10 +372,13 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     // Compute color models
     std::vector<ColorKernel> kernels;
     std::vector<std::vector<bool>> well_represented(width, std::vector<bool>(height, false));
-    constexpr double tau = 5.0;
+
+    constexpr double tau = 5.0;                // The value used in the original paper is 5.
+    constexpr int    neighborhood_radius = 10; // In the paper, this value is fixed to 10 (i.e., 20 x 20 neighborhood) for any input image. This may need to be modified so that it adapts to the image size.
+    constexpr int    number_of_bins      = 10;
+
     while (true)
     {
-        constexpr int number_of_bins = 10;
         // Initialize bins
         double bins[number_of_bins][number_of_bins][number_of_bins];
         std::fill(bins[0][0], bins[number_of_bins][0], 0.0);
@@ -509,9 +512,20 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
         }
         assert(seed_x >= 0 && seed_y >= 0);
 
+        // Compute guided filter weights
+        // Note: preventing the values from being negative is necessary to ensure the validity of the obtained normal distribution
+        const Image weight_map = calculate_guided_filter_kernel(gray_image, seed_x, seed_y, neighborhood_radius);
+
+        // Export the weight map
+        Image temporary_weight_map = weight_map;
+        temporary_weight_map.scale_to_unit();
+        temporary_weight_map.save(output_directory_path + "/weight" + std::to_string(kernels.size()) + ".png");
+
         // Compute a new color kernel
-        const Vector3d mu        = original_image.get_rgb(seed_x, seed_y);
-        const Matrix3d sigma_inv = 300.0 * Matrix3d::Identity();
+        Vector3d mu;
+        Matrix3d sigma;
+        compute_normal_distribution(original_image, weight_map, mu, sigma);
+        const Matrix3d sigma_inv = sigma.inverse();
         const ColorKernel kernel = ColorKernel(mu, sigma_inv, seed_x, seed_y);
         print_kernel(kernel);
 
@@ -544,7 +558,6 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
             overlay_alphas(index) = (sum_current_alpha < epsilon) ? 0.0 : alphas(index) / sum_current_alpha;
 
             layers[index].set_rgba(x, y, colors.segment<3>(index * 3), alphas(index));
-
             overlay_layers[index].set_rgba(x, y, colors.segment<3>(index * 3), overlay_alphas(index));
         }
     };
