@@ -112,6 +112,10 @@ public:
     const Image& get_g() const { return rgba_[1]; }
     const Image& get_b() const { return rgba_[2]; }
     const Image& get_a() const { return rgba_[3]; }
+    void set_r(const Image& r) { rgba_[0] = r; }
+    void set_g(const Image& g) { rgba_[1] = g; }
+    void set_b(const Image& b) { rgba_[2] = b; }
+    void set_a(const Image& a) { rgba_[3] = a; }
 
 private: 
     IntColor get_color(int x, int y) const;

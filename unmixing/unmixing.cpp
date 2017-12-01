@@ -346,7 +346,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
 
     // Calculate intermediate images
     const Image gray_image         = original_image.get_luminance();
-    const Image gradient_magnitude = calculate_gradient_magnitude(gray_image);
+    const Image gradient_magnitude = ImageProcessing::calculate_gradient_magnitude(gray_image);
 
     // Compute color models
     std::vector<ColorKernel> kernels;
@@ -493,22 +493,21 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
 
         // Compute guided filter weights
         // Note: preventing the values from being negative is necessary to ensure the validity of the obtained normal distribution
-        const Image weight_map = calculate_guided_filter_kernel(gray_image, seed_x, seed_y, neighborhood_radius);
+        const Image weight_map = ImageProcessing::calculate_guided_filter_kernel(gray_image, seed_x, seed_y, neighborhood_radius);
 
         // Export the weight map
         Image temporary_weight_map = weight_map;
         temporary_weight_map.scale_to_unit();
         temporary_weight_map.save(output_directory_path + "/weight" + std::to_string(kernels.size()) + ".png");
 
-        // Compute a new color kernel
+        // Calculate the color distribution
         Vector3d mu;
         Matrix3d sigma;
         compute_normal_distribution(original_image, weight_map, mu, sigma);
-        const Matrix3d sigma_inv = sigma.inverse();
-        const ColorKernel kernel = ColorKernel(mu, sigma_inv, seed_x, seed_y);
-        print_kernel(kernel);
 
-        // Add the new color kernel
+        // Add a new color kernel
+        const ColorKernel kernel = ColorKernel(mu, sigma.inverse(), seed_x, seed_y);
+        print_kernel(kernel);
         kernels.push_back(kernel);
     }
 
