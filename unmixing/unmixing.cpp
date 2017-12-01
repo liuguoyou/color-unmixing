@@ -202,7 +202,7 @@ double objective_function(const std::vector<double> &x, std::vector<double>& gra
 {
     const int number_of_layers = x.size() / 4;
 
-    OptimizationParameterSet* set_pointer = static_cast<OptimizationParameterSet*>(data);
+    const OptimizationParameterSet* set_pointer = static_cast<const OptimizationParameterSet*>(data);
 
     const VectorXd alphas = Eigen::Map<const VectorXd>(&x[0], number_of_layers);
     const VectorXd colors = Eigen::Map<const VectorXd>(&x[number_of_layers], number_of_layers * 3);
@@ -333,6 +333,32 @@ void compute_normal_distribution(const ColorImage& original_image, const Image& 
         sigma += weight_map.get_pixel(x, y) * (I - mu) * (I - mu).transpose();
     }
     sigma += 1e-3 * Matrix3d::Identity(); // For avoiding singularity
+}
+
+std::vector<ColorImage> convert_alpha_add_to_overlay(const std::vector<ColorImage>& layers)
+{
+    const int number = layers.size();
+    const int width  = layers.front().width();
+    const int height = layers.front().height();
+
+    std::vector<ColorImage> overlay_layers(number, ColorImage(width, height));
+
+    for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y)
+    {
+        for (int index = 0; index < number; ++ index)
+        {
+            VectorXd overlay_alphas = VectorXd(number);
+            double sum_current_alpha = 0.0;
+            for (int i = 0; i <= index; ++ i)
+            {
+                sum_current_alpha += layers[i].get_a().get_pixel(x, y);
+            }
+            constexpr double epsilon = 1e-16;
+            overlay_alphas(index) = (sum_current_alpha < epsilon) ? 1.0 : layers[index].get_a().get_pixel(x, y) / sum_current_alpha;
+            overlay_layers[index].set_rgba(x, y, layers[index].get_rgb(x, y), overlay_alphas(index));
+        }
+    }
+    return overlay_layers;
 }
 
 }
@@ -514,7 +540,6 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     const int number_of_layers = kernels.size();
 
     std::vector<ColorImage> layers(number_of_layers, ColorImage(width, height));
-    std::vector<ColorImage> overlay_layers(number_of_layers, ColorImage(width, height));
 
     auto per_pixel_process = [&](int x, int y)
     {
@@ -526,17 +551,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
 
         for (int index = 0; index < number_of_layers; ++ index)
         {
-            VectorXd overlay_alphas = VectorXd(number_of_layers);
-            double sum_current_alpha = 0.0;
-            for (int i = 0; i <= index; ++ i)
-            {
-                sum_current_alpha += alphas(i);
-            }
-            constexpr double epsilon = 1e-16;
-            overlay_alphas(index) = (sum_current_alpha < epsilon) ? 0.0 : alphas(index) / sum_current_alpha;
-
             layers[index].set_rgba(x, y, colors.segment<3>(index * 3), alphas(index));
-            overlay_layers[index].set_rgba(x, y, colors.segment<3>(index * 3), overlay_alphas(index));
         }
     };
 
@@ -546,6 +561,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y) per_pixel_process(x, y);
 #endif
 
+    const std::vector<ColorImage> overlay_layers = convert_alpha_add_to_overlay(layers);
     // Export layers
     for (int index = 0; index < number_of_layers; ++ index)
     {
