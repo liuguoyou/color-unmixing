@@ -245,7 +245,7 @@ Image apply_guided_filter(const Image& input_image, const ColorImage& guidance_i
         a_b.set_pixel(x, y, a_xy(2));
     }
 
-    const Image b = subtract(subtract(subtract(mean_p, multiply(a_r, mean_I_r)), multiply(a_g, mean_I_g)), multiply(a_b, mean_I_g));
+    const Image b = subtract(subtract(subtract(mean_p, multiply(a_r, mean_I_r)), multiply(a_g, mean_I_g)), multiply(a_b, mean_I_b));
 
     Image q = apply_box_filter(b, radius);
     q = add(q, multiply(apply_box_filter(a_r, radius), I_r));
