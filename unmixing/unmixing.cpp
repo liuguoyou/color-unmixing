@@ -73,6 +73,9 @@ struct OptimizationParameterSet
     double   lo;
     double   sigma;
     std::vector<ColorKernel> kernels;
+    bool     use_sparcity;
+    bool     use_target_alphas; // If true, the alternative constraint (Eq. 6) will be used instead of the unity constraint (Eq. 2).
+    VectorXd target_alphas;     // This will be used when "use_target_alphas" is true.
 };
 
 Vector3d composite_color(const VectorXd& alphas, const VectorXd& colors)
@@ -86,7 +89,14 @@ Vector3d composite_color(const VectorXd& alphas, const VectorXd& colors)
     return sum_color;
 }
 
-VectorXd gradient_of_equality_constraint_terms(const VectorXd& alphas, const VectorXd& colors, const Vector3d& target_color, const Vector4d& constraint_vector, const Vector4d& lambda, double lo)
+VectorXd gradient_of_equality_constraint_terms(const VectorXd& alphas,
+                                               const VectorXd& colors,
+                                               const Vector3d& target_color,
+                                               const Vector4d& constraint_vector,
+                                               const Vector4d& lambda,
+                                               double lo,
+                                               bool use_target_alphas,
+                                               const VectorXd& target_alphas = VectorXd())
 {
     const int number_of_layers = alphas.rows();
 
@@ -102,7 +112,7 @@ VectorXd gradient_of_equality_constraint_terms(const VectorXd& alphas, const Vec
         const double    a = alphas(index);
 
         const Vector3d partial_g_u_per_partial_a = 2.0 * u.cwiseProduct(sum_color - target_color);
-        const double   partial_g_a_per_partial_a = 2.0 * (sum_alpha - 1.0);
+        const double   partial_g_a_per_partial_a = use_target_alphas ? 2.0 * (a - target_alphas(index)) : 2.0 * (sum_alpha - 1.0);
 
         const double partial_lambda_transpose_g_per_partial_alpha = lambda.segment<3>(0).transpose() * partial_g_u_per_partial_a + lambda(3) * partial_g_a_per_partial_a;
 
@@ -135,24 +145,35 @@ double calculate_equality_constraint_terms(const Vector4d& constraint_vector, co
     return lambda.transpose() * constraint_vector + 0.5 * lo * constraint_vector.squaredNorm();
 }
 
-Vector4d calculate_equality_constraint_vector(const VectorXd& alphas, const VectorXd& colors, const Vector3d& target_color)
+Vector4d calculate_equality_constraint_vector(const VectorXd& alphas,
+                                              const VectorXd& colors,
+                                              const Vector3d& target_color,
+                                              bool use_target_alphas,
+                                              const VectorXd& target_alphas = VectorXd())
 {
-    const double   sum_alpha = alphas.sum();
     const Vector3d sum_color = composite_color(alphas, colors);
-
-    const double   g_alpha = (sum_alpha - 1.0) * (sum_alpha - 1.0);
-    const Vector3d g_color = (sum_color - target_color).cwiseProduct(sum_color - target_color);
+    const Vector3d g_color   = (sum_color - target_color).cwiseProduct(sum_color - target_color);
+    const double   sum_alpha = alphas.sum();
+    const double   g_alpha   = use_target_alphas ? (alphas - target_alphas).squaredNorm() : (sum_alpha - 1.0) * (sum_alpha - 1.0);
 
     return Vector4d(g_color(0), g_color(1), g_color(2), g_alpha);
 }
 
-Vector4d calculate_equality_constraint_vector(const VectorXd& x, const Vector3d& target_color)
+Vector4d calculate_equality_constraint_vector(const VectorXd& x,
+                                              const Vector3d& target_color,
+                                              bool use_target_alphas,
+                                              const VectorXd& target_alphas = VectorXd())
 {
     const int number_of_layers = x.rows() / 4;
-    return calculate_equality_constraint_vector(x.segment(0, number_of_layers), x.segment(number_of_layers, number_of_layers * 3), target_color);
+    return calculate_equality_constraint_vector(x.segment(0, number_of_layers), x.segment(number_of_layers, number_of_layers * 3), target_color, use_target_alphas, target_alphas);
 }
 
-VectorXd gradient_of_energy_function(const VectorXd& alphas, const VectorXd& colors, const std::vector<ColorKernel>& kernels, double sigma, bool sparcity = true)
+// Calculate the gradient of the main objective function (Eq. 4)
+VectorXd gradient_of_energy_function(const VectorXd& alphas,
+                                     const VectorXd& colors,
+                                     const std::vector<ColorKernel>& kernels,
+                                     double sigma,
+                                     bool use_sparcity)
 {
     const int number_of_layers = alphas.rows();
 
@@ -168,7 +189,7 @@ VectorXd gradient_of_energy_function(const VectorXd& alphas, const VectorXd& col
     }
 
     // Sparcity term
-    if (sparcity)
+    if (use_sparcity)
     {
         double alpha_sum         = alphas.sum();
         double alpha_squared_sum = alphas.squaredNorm();
@@ -181,7 +202,12 @@ VectorXd gradient_of_energy_function(const VectorXd& alphas, const VectorXd& col
     return grad;
 }
 
-double energy_function(const VectorXd& alphas, const VectorXd& colors, const std::vector<ColorKernel>& kernels, double sigma, bool sparcity = true)
+// Calculate the main objective function (Eq. 4)
+double energy_function(const VectorXd& alphas,
+                       const VectorXd& colors,
+                       const std::vector<ColorKernel>& kernels,
+                       double sigma,
+                       bool use_sparcity)
 {
     const int number_of_layers = alphas.rows();
 
@@ -193,7 +219,7 @@ double energy_function(const VectorXd& alphas, const VectorXd& colors, const std
     }
 
     // Sparcity term
-    if (sparcity) energy += sigma * ((alphas.sum() / alphas.squaredNorm()) - 1.0);
+    if (use_sparcity) energy += sigma * ((alphas.sum() / alphas.squaredNorm()) - 1.0);
 
     return energy;
 }
@@ -207,16 +233,16 @@ double objective_function(const std::vector<double> &x, std::vector<double>& gra
     const VectorXd alphas = Eigen::Map<const VectorXd>(&x[0], number_of_layers);
     const VectorXd colors = Eigen::Map<const VectorXd>(&x[number_of_layers], number_of_layers * 3);
 
-    const Vector4d constraint_vector = calculate_equality_constraint_vector(alphas, colors, set_pointer->target_color);
+    const Vector4d constraint_vector = calculate_equality_constraint_vector(alphas, colors, set_pointer->target_color, set_pointer->use_target_alphas, set_pointer->target_alphas);
 
     if (!grad.empty())
     {
-        const VectorXd gradient_energy     = gradient_of_energy_function(alphas, colors, set_pointer->kernels, set_pointer->sigma);
-        const VectorXd gradient_constraint = gradient_of_equality_constraint_terms(alphas, colors, set_pointer->target_color, constraint_vector, set_pointer->lambda, set_pointer->lo);
+        const VectorXd gradient_energy     = gradient_of_energy_function(alphas, colors, set_pointer->kernels, set_pointer->sigma, set_pointer->use_sparcity);
+        const VectorXd gradient_constraint = gradient_of_equality_constraint_terms(alphas, colors, set_pointer->target_color, constraint_vector, set_pointer->lambda, set_pointer->lo, set_pointer->use_target_alphas, set_pointer->target_alphas);
         Eigen::Map<VectorXd>(&grad[0], grad.size()) = gradient_energy + gradient_constraint;
     }
 
-    return energy_function(alphas, colors, set_pointer->kernels, set_pointer->sigma) + calculate_equality_constraint_terms(constraint_vector, set_pointer->lambda, set_pointer->lo);
+    return energy_function(alphas, colors, set_pointer->kernels, set_pointer->sigma, set_pointer->use_sparcity) + calculate_equality_constraint_terms(constraint_vector, set_pointer->lambda, set_pointer->lo);
 }
 
 VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::vector<ColorKernel>& kernels)
@@ -231,15 +257,17 @@ VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::v
     constexpr double beta    = 10.0;
 
     OptimizationParameterSet set;
-    set.kernels      = kernels;
-    set.lambda       = Vector4d::Constant(0.1);
-    set.lo           = 0.1;
-    set.target_color = target_color;
+    set.kernels           = kernels;
+    set.lambda            = Vector4d::Constant(0.1);
+    set.lo                = 0.1;
+    set.target_color      = target_color;
+    set.sigma             = 10.0;
 #ifdef SPARCITY
-    set.sigma        = 10.0;
+    set.use_sparcity      = true;
 #else
-    set.sigma        = 0.0;
+    set.use_sparcity      = false;
 #endif
+    set.use_target_alphas = false;
 
     VectorXd x_initial = VectorXd::Zero(number_of_layers * 4);
 
@@ -272,8 +300,8 @@ VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::v
 #else
         const VectorXd x_new = nloptUtility::compute(x, upper, lower, objective_function, &set, nlopt::LN_COBYLA, 200);
 #endif
-        const Vector4d g     = calculate_equality_constraint_vector(x    , set.target_color);
-        const VectorXd g_new = calculate_equality_constraint_vector(x_new, set.target_color);
+        const Vector4d g     = calculate_equality_constraint_vector(x    , set.target_color, false);
+        const VectorXd g_new = calculate_equality_constraint_vector(x_new, set.target_color, false);
         set.lambda += set.lo * g_new;
 
         if (g_new.norm() > gamma * g.norm()) set.lo *= beta;
@@ -282,13 +310,63 @@ VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::v
         x = x_new;
 
         if (!is_changed && g.norm() < epsilon) break;
-        if (count > max_count)
-        {
-#if 0
-            std::cerr << "Error: g = [ " << g.transpose() << " ]" << std::endl;
+        if (count > max_count) break;
+
+        ++ count;
+    }
+    return x;
+}
+
+VectorXd solve_per_pixel_optimization_for_color_refinement(const Vector3d& target_color,
+                                                           const std::vector<ColorKernel>& kernels,
+                                                           const VectorXd& initial_colors,
+                                                           const VectorXd& target_alphas)
+{
+    const int number_of_layers = kernels.size();
+
+    const VectorXd upper = VectorXd::Constant(number_of_layers * 4, 1.0);
+    const VectorXd lower = VectorXd::Constant(number_of_layers * 4, 0.0);
+
+    constexpr double gamma   = 0.25;
+    constexpr double epsilon = 1e-08;
+    constexpr double beta    = 10.0;
+
+    OptimizationParameterSet set;
+    set.kernels           = kernels;
+    set.lambda            = Vector4d::Constant(0.1);
+    set.lo                = 0.1;
+    set.target_color      = target_color;
+    set.sigma             = 10.0;
+    set.use_sparcity      = false;
+    set.use_target_alphas = true;
+    set.target_alphas     = target_alphas;
+
+    VectorXd x_initial(number_of_layers * 4);
+    x_initial.segment(0, number_of_layers) = target_alphas;
+    x_initial.segment(number_of_layers, number_of_layers * 3) = initial_colors;
+
+    VectorXd x = x_initial;
+
+    int count = 0;
+    constexpr int max_count = 100;
+    while (true)
+    {
+#ifdef GRADIENT
+        const VectorXd x_new = nloptUtility::compute(x, upper, lower, objective_function, &set, nlopt::LD_MMA, 100);
+#else
+        const VectorXd x_new = nloptUtility::compute(x, upper, lower, objective_function, &set, nlopt::LN_COBYLA, 200);
 #endif
-            break;
-        }
+        const Vector4d g     = calculate_equality_constraint_vector(x    , set.target_color, true, target_alphas);
+        const VectorXd g_new = calculate_equality_constraint_vector(x_new, set.target_color, true, target_alphas);
+        set.lambda += set.lo * g_new;
+
+        if (g_new.norm() > gamma * g.norm()) set.lo *= beta;
+
+        const bool is_changed = !x_new.isApprox(x, epsilon);
+        x = x_new;
+
+        if (!is_changed && g.norm() < epsilon) break;
+        if (count > max_count) break;
 
         ++ count;
     }
@@ -332,7 +410,75 @@ void compute_normal_distribution(const ColorImage& original_image, const Image& 
         const Vector3d I = original_image.get_rgb(x, y);
         sigma += weight_map.get_pixel(x, y) * (I - mu) * (I - mu).transpose();
     }
-    sigma += 1e-3 * Matrix3d::Identity(); // For avoiding singularity
+    sigma += 1e-03 * Matrix3d::Identity(); // For avoiding singularity
+}
+
+std::vector<ColorImage> perform_matte_refinement(const ColorImage& original_image, const std::vector<ColorImage>& layers, const std::vector<ColorKernel>& kernels)
+{
+    assert(layers.size() == kernels.size());
+
+    const int number = layers.size();
+    const int width  = original_image.width();
+    const int height = original_image.height();
+    const int radius = 60 * std::min(width, height) / 1000;
+    constexpr double epsilon = 1e-04;
+
+    // Apply guided filter
+    std::vector<Image> refined_alphas;
+    for (const ColorImage& layer : layers)
+    {
+        const Image alpha = layer.get_a();
+        const Image refined_alpha = ImageProcessing::apply_guided_filter(alpha, original_image, radius, epsilon);
+
+        refined_alphas.push_back(refined_alpha);
+    }
+
+    // Regularize alphas such that the sum equals to one for each pixel
+    for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y)
+    {
+        double sum = 0.0;
+        for (int i = 0; i < number; ++ i)
+        {
+            refined_alphas[i].set_pixel(x, y, std::max(std::min(refined_alphas[i].get_pixel(x, y), 1.0), 0.0));
+            sum += refined_alphas[i].get_pixel(x, y);
+        }
+        assert(sum > 0.0);
+        for (int i = 0; i < number; ++ i)
+        {
+            refined_alphas[i].set_pixel(x, y, refined_alphas[i].get_pixel(x, y) / sum);
+        }
+    }
+
+    // Perform optimization
+    std::vector<ColorImage> refined_layers(number, ColorImage(width, height));
+    auto per_pixel_process = [&](int x, int y)
+    {
+        VectorXd initial_colors(number * 3);
+        VectorXd target_alphas(number);
+        for (int i = 0; i < number; ++ i)
+        {
+            initial_colors.segment<3>(i * 3) = layers[i].get_rgb(x, y);
+            target_alphas(i) = refined_alphas[i].get_pixel(x, y);
+        }
+
+        const Vector3d pixel_color = original_image.get_rgb(x, y);
+        const VectorXd solution = solve_per_pixel_optimization_for_color_refinement(pixel_color, kernels, initial_colors, target_alphas);
+
+        const VectorXd alphas = Eigen::Map<const VectorXd>(&solution[0], number);
+        const VectorXd colors = Eigen::Map<const VectorXd>(&solution[number], number * 3);
+
+        for (int index = 0; index < number; ++ index)
+        {
+            refined_layers[index].set_rgba(x, y, colors.segment<3>(index * 3), alphas(index));
+        }
+    };
+#ifdef PARALLEL
+    perform_in_parallel(per_pixel_process, width, height);
+#else
+    for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y) per_pixel_process(x, y);
+#endif
+
+    return refined_layers;
 }
 
 std::vector<ColorImage> convert_alpha_add_to_overlay(const std::vector<ColorImage>& layers)
@@ -562,12 +708,18 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
 #endif
 
     const std::vector<ColorImage> overlay_layers = convert_alpha_add_to_overlay(layers);
+    const std::vector<ColorImage> refined_layers = perform_matte_refinement(original_image, layers, kernels);
+    const std::vector<ColorImage> refined_overlay_layers = convert_alpha_add_to_overlay(refined_layers);
+
     // Export layers
     for (int index = 0; index < number_of_layers; ++ index)
     {
         layers[index].save(output_directory_path + "/layer" + std::to_string(index) + ".png");
         layers[index].get_a().save(output_directory_path + "/layer_alpha" + std::to_string(index) + ".png");
         overlay_layers[index].save(output_directory_path + "/overlay_layer" + std::to_string(index) + ".png");
+        refined_layers[index].save(output_directory_path + "/refined_layer" + std::to_string(index) + ".png");
+        refined_layers[index].get_a().save(output_directory_path + "/refined_layer_alpha" + std::to_string(index) + ".png");
+        refined_overlay_layers[index].save(output_directory_path + "/refined_overlay_layer" + std::to_string(index) + ".png");
     }
 
     // Export the original image
