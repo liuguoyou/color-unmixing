@@ -410,7 +410,10 @@ void compute_normal_distribution(const ColorImage& original_image, const Image& 
         const Vector3d I = original_image.get_rgb(x, y);
         sigma += weight_map.get_pixel(x, y) * (I - mu) * (I - mu).transpose();
     }
-    sigma += 1e-03 * Matrix3d::Identity(); // For avoiding singularity
+
+    // For avoiding singularity (note: this process is not used in the original paper)
+    constexpr double epsilon = 1e-03; // This value is empirically set
+    sigma += epsilon * Matrix3d::Identity();
 }
 
 std::vector<ColorImage> perform_matte_refinement(const ColorImage& original_image, const std::vector<ColorImage>& layers, const std::vector<ColorKernel>& kernels)
