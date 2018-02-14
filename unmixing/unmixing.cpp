@@ -228,21 +228,21 @@ double objective_function(const std::vector<double> &x, std::vector<double>& gra
 {
     const int number_of_layers = x.size() / 4;
 
-    const OptimizationParameterSet* set_pointer = static_cast<const OptimizationParameterSet*>(data);
+    const OptimizationParameterSet& set = *static_cast<const OptimizationParameterSet*>(data);
 
     const VectorXd alphas = Eigen::Map<const VectorXd>(&x[0], number_of_layers);
     const VectorXd colors = Eigen::Map<const VectorXd>(&x[number_of_layers], number_of_layers * 3);
 
-    const Vector4d constraint_vector = calculate_equality_constraint_vector(alphas, colors, set_pointer->target_color, set_pointer->use_target_alphas, set_pointer->target_alphas);
+    const Vector4d constraint_vector = calculate_equality_constraint_vector(alphas, colors, set.target_color, set.use_target_alphas, set.target_alphas);
 
     if (!grad.empty())
     {
-        const VectorXd gradient_energy     = gradient_of_energy_function(alphas, colors, set_pointer->kernels, set_pointer->sigma, set_pointer->use_sparcity);
-        const VectorXd gradient_constraint = gradient_of_equality_constraint_terms(alphas, colors, set_pointer->target_color, constraint_vector, set_pointer->lambda, set_pointer->lo, set_pointer->use_target_alphas, set_pointer->target_alphas);
+        const VectorXd gradient_energy     = gradient_of_energy_function(alphas, colors, set.kernels, set.sigma, set.use_sparcity);
+        const VectorXd gradient_constraint = gradient_of_equality_constraint_terms(alphas, colors, set.target_color, constraint_vector, set.lambda, set.lo, set.use_target_alphas, set.target_alphas);
         Eigen::Map<VectorXd>(&grad[0], grad.size()) = gradient_energy + gradient_constraint;
     }
 
-    return energy_function(alphas, colors, set_pointer->kernels, set_pointer->sigma, set_pointer->use_sparcity) + calculate_equality_constraint_terms(constraint_vector, set_pointer->lambda, set_pointer->lo);
+    return energy_function(alphas, colors, set.kernels, set.sigma, set.use_sparcity) + calculate_equality_constraint_terms(constraint_vector, set.lambda, set.lo);
 }
 
 VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::vector<ColorKernel>& kernels)
