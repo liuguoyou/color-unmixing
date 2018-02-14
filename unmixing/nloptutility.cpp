@@ -10,7 +10,8 @@ Eigen::VectorXd compute(const Eigen::VectorXd& x_initial,
                         nlopt::vfunc objective_function,
                         void* data,
                         nlopt::algorithm algorithm,
-                        int max_evaluations
+                        int max_evaluations,
+                        double tolerance
                         )
 {
     const unsigned M = x_initial.rows();
@@ -28,6 +29,8 @@ Eigen::VectorXd compute(const Eigen::VectorXd& x_initial,
     solver.set_lower_bounds(l);
     solver.set_upper_bounds(u);
     solver.set_maxeval(max_evaluations);
+    solver.set_xtol_rel(tolerance);
+    solver.set_ftol_rel(tolerance);
     solver.set_min_objective(objective_function, data);
 
     std::vector<double> x_star(M);

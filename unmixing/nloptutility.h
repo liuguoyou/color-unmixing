@@ -13,7 +13,8 @@ Eigen::VectorXd compute(const Eigen::VectorXd& x_initial,
                         nlopt::vfunc objective_function,
                         void *data = nullptr,
                         nlopt::algorithm algorithm = nlopt::LD_TNEWTON,
-                        int max_evaluations = 1000
+                        int max_evaluations = 1000,
+                        double tolerance = 1e-12
                         );
 }
 
