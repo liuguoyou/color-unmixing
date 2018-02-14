@@ -16,7 +16,6 @@ using ImageProcessing::Image;
 using ImageProcessing::ColorImage;
 
 //#define SPARCITY
-#define GRADIENT
 #define PARALLEL
 
 namespace
@@ -245,7 +244,11 @@ double objective_function(const std::vector<double> &x, std::vector<double>& gra
     return energy_function(alphas, colors, set.kernels, set.sigma, set.use_sparcity) + calculate_equality_constraint_terms(constraint_vector, set.lambda, set.lo);
 }
 
-VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::vector<ColorKernel>& kernels)
+VectorXd solve_per_pixel_optimization(const Vector3d& target_color,
+                                      const std::vector<ColorKernel>& kernels,
+                                      bool for_refinement = false,
+                                      const VectorXd& initial_colors = VectorXd(),
+                                      const VectorXd& target_alphas = VectorXd())
 {
     const int number_of_layers = kernels.size();
 
@@ -262,31 +265,48 @@ VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::v
     set.lo                = 0.1;
     set.target_color      = target_color;
     set.sigma             = 10.0;
-#ifdef SPARCITY
-    set.use_sparcity      = true;
-#else
-    set.use_sparcity      = false;
-#endif
-    set.use_target_alphas = false;
-
-    VectorXd x_initial = VectorXd::Zero(number_of_layers * 4);
-
-    double min_distance  = DBL_MAX;
-    int    closest_index = - 1;
-    for (int index = 0; index < number_of_layers; ++ index)
+    set.target_alphas     = target_alphas;
+    if (!for_refinement)
     {
-        double distance = kernels[index].calculate_squared_Mahalanobis_distance(set.target_color);
-        if (min_distance > closest_index)
+#ifdef SPARCITY
+        set.use_sparcity      = true;
+#else
+        set.use_sparcity      = false;
+#endif
+        set.use_target_alphas = false;
+    }
+    else
+    {
+        set.use_sparcity      = false;
+        set.use_target_alphas = true;
+    }
+
+    // Find an initial solution
+    VectorXd x_initial = VectorXd::Zero(number_of_layers * 4);
+    if (!for_refinement)
+    {
+        double min_distance  = DBL_MAX;
+        int    closest_index = - 1;
+        for (int index = 0; index < number_of_layers; ++ index)
         {
-            min_distance  = distance;
-            closest_index = index;
+            double distance = kernels[index].calculate_squared_Mahalanobis_distance(set.target_color);
+            if (min_distance > closest_index)
+            {
+                min_distance  = distance;
+                closest_index = index;
+            }
+        }
+        x_initial(closest_index) = 1.0;
+        for (int index = 0; index < number_of_layers; ++ index)
+        {
+            x_initial.segment<3>(number_of_layers + index * 3) = (index == closest_index) ? set.target_color : kernels[index].mu;
+            for (int i : { 0, 1, 2}) x_initial(number_of_layers + index * 3 + i) = std::max(std::min(x_initial(number_of_layers + index * 3 + i), 1.0), 0.0);
         }
     }
-    x_initial(closest_index) = 1.0;
-    for (int index = 0; index < number_of_layers; ++ index)
+    else
     {
-        x_initial.segment<3>(number_of_layers + index * 3) = (index == closest_index) ? set.target_color : kernels[index].mu;
-        for (int i : { 0, 1, 2}) x_initial(number_of_layers + index * 3 + i) = std::max(std::min(x_initial(number_of_layers + index * 3 + i), 1.0), 0.0);
+        x_initial.segment(0, number_of_layers) = target_alphas;
+        x_initial.segment(number_of_layers, number_of_layers * 3) = initial_colors;
     }
 
     VectorXd x = x_initial;
@@ -295,78 +315,19 @@ VectorXd solve_per_pixel_optimization(const Vector3d& target_color, const std::v
     constexpr int max_count = 100;
     while (true)
     {
-#ifdef GRADIENT
-        const VectorXd x_new = nloptUtility::compute(x, upper, lower, objective_function, &set, nlopt::LD_MMA, 100);
-#else
-        const VectorXd x_new = nloptUtility::compute(x, upper, lower, objective_function, &set, nlopt::LN_COBYLA, 200);
-#endif
-        const Vector4d g     = calculate_equality_constraint_vector(x    , set.target_color, false);
-        const VectorXd g_new = calculate_equality_constraint_vector(x_new, set.target_color, false);
+        const VectorXd x_new = nloptUtility::compute(x, upper, lower, objective_function, &set, nlopt::LD_MMA, 100, epsilon);
+        const Vector4d g     = calculate_equality_constraint_vector(x    , set.target_color, for_refinement, target_alphas);
+        const Vector4d g_new = calculate_equality_constraint_vector(x_new, set.target_color, for_refinement, target_alphas);
+
         set.lambda += set.lo * g_new;
-
         if (g_new.norm() > gamma * g.norm()) set.lo *= beta;
-
-        const bool is_changed = !x_new.isApprox(x, epsilon);
+  
+        const bool is_unchanged = (x_new - x).squaredNorm() < epsilon;
+        const bool is_satisfied = g_new.norm() < epsilon;
+        
         x = x_new;
-
-        if (!is_changed && g.norm() < epsilon) break;
-        if (count > max_count) break;
-
-        ++ count;
-    }
-    return x;
-}
-
-VectorXd solve_per_pixel_optimization_for_color_refinement(const Vector3d& target_color,
-                                                           const std::vector<ColorKernel>& kernels,
-                                                           const VectorXd& initial_colors,
-                                                           const VectorXd& target_alphas)
-{
-    const int number_of_layers = kernels.size();
-
-    const VectorXd upper = VectorXd::Constant(number_of_layers * 4, 1.0);
-    const VectorXd lower = VectorXd::Constant(number_of_layers * 4, 0.0);
-
-    constexpr double gamma   = 0.25;
-    constexpr double epsilon = 1e-08;
-    constexpr double beta    = 10.0;
-
-    OptimizationParameterSet set;
-    set.kernels           = kernels;
-    set.lambda            = Vector4d::Constant(0.1);
-    set.lo                = 0.1;
-    set.target_color      = target_color;
-    set.sigma             = 10.0;
-    set.use_sparcity      = false;
-    set.use_target_alphas = true;
-    set.target_alphas     = target_alphas;
-
-    VectorXd x_initial(number_of_layers * 4);
-    x_initial.segment(0, number_of_layers) = target_alphas;
-    x_initial.segment(number_of_layers, number_of_layers * 3) = initial_colors;
-
-    VectorXd x = x_initial;
-
-    int count = 0;
-    constexpr int max_count = 100;
-    while (true)
-    {
-#ifdef GRADIENT
-        const VectorXd x_new = nloptUtility::compute(x, upper, lower, objective_function, &set, nlopt::LD_MMA, 100);
-#else
-        const VectorXd x_new = nloptUtility::compute(x, upper, lower, objective_function, &set, nlopt::LN_COBYLA, 200);
-#endif
-        const Vector4d g     = calculate_equality_constraint_vector(x    , set.target_color, true, target_alphas);
-        const VectorXd g_new = calculate_equality_constraint_vector(x_new, set.target_color, true, target_alphas);
-        set.lambda += set.lo * g_new;
-
-        if (g_new.norm() > gamma * g.norm()) set.lo *= beta;
-
-        const bool is_changed = !x_new.isApprox(x, epsilon);
-        x = x_new;
-
-        if (!is_changed && g.norm() < epsilon) break;
-        if (count > max_count) break;
+        
+        if ((is_unchanged && is_satisfied) || count > max_count) break;
 
         ++ count;
     }
@@ -465,7 +426,7 @@ std::vector<ColorImage> perform_matte_refinement(const ColorImage& original_imag
         }
 
         const Vector3d pixel_color = original_image.get_rgb(x, y);
-        const VectorXd solution = solve_per_pixel_optimization_for_color_refinement(pixel_color, kernels, initial_colors, target_alphas);
+        const VectorXd solution = solve_per_pixel_optimization(pixel_color, kernels, true, initial_colors, target_alphas);
 
         const VectorXd alphas = Eigen::Map<const VectorXd>(&solution[0], number);
         const VectorXd colors = Eigen::Map<const VectorXd>(&solution[number], number * 3);
@@ -530,7 +491,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
     constexpr double tau                 = 5.0; // The value used in the original paper is 5.
     constexpr int    neighborhood_radius = 10;  // In the paper, this value is fixed to 10 (i.e., 20 x 20 neighborhood) for any input image. This may need to be modified so that it adapts to the image size.
     constexpr int    number_of_bins      = 10;
-
+    
     while (true)
     {
         // Initialize bins
@@ -585,7 +546,7 @@ void ColorUnmixing::compute_color_unmixing(const std::string &image_file_path, c
 #else
         for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y) per_pixel_polling_process(x, y);
 #endif
-
+        
         // Export the current mask
         Image well_represented_map(width, height, 0.0);
         for (int x = 0; x < width; ++ x) for (int y = 0; y < height; ++ y)
