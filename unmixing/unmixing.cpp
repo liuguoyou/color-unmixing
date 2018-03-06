@@ -290,7 +290,7 @@ VectorXd solve_per_pixel_optimization(const Vector3d& target_color,
         for (int index = 0; index < number_of_layers; ++ index)
         {
             double distance = kernels[index].calculate_squared_Mahalanobis_distance(set.target_color);
-            if (min_distance > closest_index)
+            if (min_distance > distance)
             {
                 min_distance  = distance;
                 closest_index = index;
